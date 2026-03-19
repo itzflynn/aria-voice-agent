@@ -398,10 +398,12 @@ body::after {
 .perm-error {
   font-family: 'JetBrains Mono', monospace;
   font-size: 10px; color: var(--red);
-  text-align: center; padding: 8px 14px;
-  border: 1px solid rgba(255,94,125,0.2);
-  border-radius: 8px; background: var(--red-dim);
+  text-align: center; padding: 10px 16px;
+  border: 1px solid rgba(255,94,125,0.25);
+  border-radius: 10px; background: var(--red-dim);
   display: none;
+  line-height: 1.6;
+  width: 100%;
 }
 </style>
 </head>
@@ -919,15 +921,42 @@ function handleMic() {
   }
 }
 
-function startListening() {
+async function startListening() {
   const SpeechRecognition = window.SpeechRecognition || window.webkitSpeechRecognition;
   if (!SpeechRecognition) {
-    // Fallback: show text input prompt in the live bar
     setLiveBar('Voice not supported in this browser. Type below.', true);
     showTextFallback();
     return;
   }
 
+  // ── Step 1: explicitly request mic permission first ──
+  // This forces the browser permission dialog to appear before we touch SpeechRecognition
+  document.getElementById('permError').style.display = 'none';
+  setLiveBar('Requesting microphone access...', true);
+  document.getElementById('micHint').textContent = 'Allow microphone when prompted';
+
+  let stream = null;
+  try {
+    stream = await navigator.mediaDevices.getUserMedia({ audio: true, video: false });
+  } catch (err) {
+    setLiveBar('', false);
+    stopListeningUI();
+    const permEl = document.getElementById('permError');
+    if (err.name === 'NotAllowedError' || err.name === 'PermissionDeniedError') {
+      permEl.textContent = '🔒 Microphone access denied. Click the 🔒 icon in your address bar and allow microphone, then try again.';
+    } else if (err.name === 'NotFoundError') {
+      permEl.textContent = '🎤 No microphone found. Please connect a microphone and try again.';
+    } else {
+      permEl.textContent = '⚠️ Could not access microphone: ' + err.message;
+    }
+    permEl.style.display = 'block';
+    return;
+  }
+
+  // Permission granted — stop the test stream (SpeechRecognition handles its own)
+  stream.getTracks().forEach(t => t.stop());
+
+  // ── Step 2: now start SpeechRecognition ──
   appState.listening = true;
   appState.busy = false;
 
@@ -937,16 +966,20 @@ function startListening() {
   document.getElementById('r1').className = 'ripple go';
   document.getElementById('r2').className = 'ripple go';
   setWaveform(true);
-  setLiveBar('Listening...', true);
+  setLiveBar('Listening... speak now', true);
   setStatus('Listening', 'recording');
   document.getElementById('micHint').className = 'mic-hint recording';
   document.getElementById('micHint').textContent = 'Tap again to stop';
-  document.getElementById('permError').style.display = 'none';
 
   const recognition = new SpeechRecognition();
   recognition.lang = 'en-US';
   recognition.continuous = false;
   recognition.interimResults = true;
+  recognition.maxAlternatives = 1;
+
+  recognition.onstart = () => {
+    setLiveBar('Listening... speak now', true);
+  };
 
   recognition.onresult = (e) => {
     let interim = '', final = '';
@@ -956,18 +989,28 @@ function startListening() {
     }
     setLiveBar(final || interim || 'Listening...', true);
     if (final) {
+      appState.listening = false; // prevent onend from double-firing stopUI
       recognition.stop();
       handleUserSpeech(final.trim());
     }
   };
 
   recognition.onerror = (e) => {
+    console.warn('SpeechRecognition error:', e.error);
     stopListeningUI();
+    const permEl = document.getElementById('permError');
     if (e.error === 'not-allowed' || e.error === 'permission-denied') {
-      document.getElementById('permError').style.display = 'block';
+      permEl.textContent = '🔒 Microphone blocked. Click the 🔒 in your address bar → allow microphone → refresh.';
+      permEl.style.display = 'block';
     } else if (e.error === 'no-speech') {
       setLiveBar('No speech detected. Try again.', true);
-      setTimeout(() => setLiveBar('', false), 2000);
+      setTimeout(() => setLiveBar('', false), 2500);
+    } else if (e.error === 'network') {
+      setLiveBar('Network error with speech service. Check connection.', true);
+      setTimeout(() => setLiveBar('', false), 2500);
+    } else if (e.error === 'audio-capture') {
+      permEl.textContent = '🎤 Microphone in use by another app. Close other apps using your mic and try again.';
+      permEl.style.display = 'block';
     }
   };
 
@@ -976,7 +1019,12 @@ function startListening() {
   };
 
   appState.recognition = recognition;
-  try { recognition.start(); } catch(e) {}
+  try {
+    recognition.start();
+  } catch (e) {
+    console.error('recognition.start() failed:', e);
+    stopListeningUI();
+  }
 }
 
 function stopListening() {
@@ -1110,6 +1158,30 @@ function speakResponse(text) {
 initWaveform();
 setStatus('Ready', '');
 window.speechSynthesis && window.speechSynthesis.addEventListener('voiceschanged', () => {});
+
+// ── Browser compatibility check on load ──
+(function checkBrowser() {
+  const hasSpeechRecognition = !!(window.SpeechRecognition || window.webkitSpeechRecognition);
+  const hasMediaDevices = !!(navigator.mediaDevices && navigator.mediaDevices.getUserMedia);
+  const permEl = document.getElementById('permError');
+
+  if (!hasSpeechRecognition) {
+    // Auto-show text fallback for Firefox / unsupported browsers
+    permEl.textContent = '⚠️ Your browser doesn\'t support voice input. Use Chrome or Edge for the full experience. Text input is available below.';
+    permEl.style.display = 'block';
+    showTextFallback();
+    document.getElementById('micBtn').style.opacity = '0.4';
+    document.getElementById('micBtn').style.cursor = 'not-allowed';
+    document.getElementById('micBtn').onclick = null;
+    document.getElementById('micHint').textContent = 'Voice unavailable — use Chrome or Edge';
+    return;
+  }
+
+  if (!hasMediaDevices) {
+    permEl.textContent = '🔒 Microphone API unavailable. If you\'re on HTTP (not HTTPS), try accessing via localhost or deploy with HTTPS.';
+    permEl.style.display = 'block';
+  }
+})();
 </script>
 </body>
 </html>

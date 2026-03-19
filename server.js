@@ -16,15 +16,24 @@ app.use(helmet({
   contentSecurityPolicy: {
     directives: {
       defaultSrc:  ["'self'"],
-      scriptSrc:   ["'self'", "'unsafe-inline'", "fonts.googleapis.com"],
+      scriptSrc:   ["'self'", "'unsafe-inline'"],
       styleSrc:    ["'self'", "'unsafe-inline'", "fonts.googleapis.com", "fonts.gstatic.com"],
       fontSrc:     ["'self'", "fonts.googleapis.com", "fonts.gstatic.com"],
-      connectSrc:  ["'self'"],
-      mediaSrc:    ["'self'", "blob:"],
+      connectSrc:  ["'self'", "wss:", "https:"],
+      mediaSrc:    ["'self'", "blob:", "mediastream:"],
       imgSrc:      ["'self'", "data:"],
+      workerSrc:   ["'self'", "blob:"],
     }
-  }
+  },
+  crossOriginEmbedderPolicy: false,
 }));
+
+// Allow microphone access explicitly
+app.use((_req, res, next) => {
+  res.setHeader('Permissions-Policy', 'microphone=*, camera=()');
+  res.setHeader('Cross-Origin-Opener-Policy', 'same-origin-allow-popups');
+  next();
+});
 app.use(compression());
 app.use(cors({ origin: process.env.ALLOWED_ORIGIN || '*' }));
 app.use(morgan(ENV === 'production' ? 'combined' : 'dev'));
